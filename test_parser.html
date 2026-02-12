@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="background:#111;color:#0f0;font-family:monospace;padding:20px">
+<h2>DXF Parser Unit Test</h2>
+<pre id="out"></pre>
+<script>
+function log(m){document.getElementById('out').textContent+=m+'\n'}
+
+// Inline the parser from index.html
+function parseDXF(text){
+  if(text.charCodeAt(0)===0xFEFF) text=text.slice(1);
+  if(text.charCodeAt(0)===0xEF&&text.charCodeAt(1)===0xBB&&text.charCodeAt(2)===0xBF) text=text.slice(3);
+  const rawLines=text.split(/\r?\n/);
+  const cleaned=[];
+  for(const ln of rawLines){const t=ln.trim();if(t.length>0)cleaned.push(t)}
+  const pairs=[];
+  for(let i=0;i<cleaned.length-1;i+=2){
+    const code=parseInt(cleaned[i],10);
+    if(isNaN(code)){i--;continue}
+    pairs.push({code,value:cleaned[i+1]});
+  }
+  log('Pairs: '+pairs.length);
+  log('First 20 pairs:');
+  for(let k=0;k<Math.min(20,pairs.length);k++) log('  ['+k+'] code='+pairs[k].code+' val="'+pairs[k].value+'"');
+
+  let idx=0;
+  while(idx<pairs.length){
+    if(pairs[idx].code===2&&pairs[idx].value.toUpperCase()==='ENTITIES')break;
+    idx++;
+  }
+  if(idx>=pairs.length){log('ENTITIES NOT FOUND!');return[]}
+  log('\nENTITIES found at pair index '+idx);
+  idx++;
+
+  const shapes=[];
+  const dxfColor=c=>{const m={'1':'#ff0000','2':'#ffff00','3':'#00ff00','4':'#00ffff','5':'#0000ff','6':'#ff00ff','7':'#ffffff'};return m[String(c)]||'#ffffff'};
+
+  while(idx<pairs.length){
+    if(pairs[idx].code===0&&pairs[idx].value.toUpperCase()==='ENDSEC')break;
+    if(pairs[idx].code===0&&pairs[idx].value.toUpperCase()==='EOF')break;
+    if(pairs[idx].code===0){
+      const et=pairs[idx].value.toUpperCase();
+      log('\n--- Entity: '+et+' at idx='+idx+' ---');
+      idx++;
+      const props={};const multiProps={};
+      while(idx<pairs.length&&pairs[idx].code!==0){
+        const c=pairs[idx].code,v=pairs[idx].value;
+        if(!multiProps[c])multiProps[c]=[];
+        multiProps[c].push(v);
+        if(!props[c])props[c]=v;
+        idx++;
+      }
+      log('Props: '+JSON.stringify(props));
+      log('MultiProps keys: '+Object.keys(multiProps).join(','));
+      for(const k of Object.keys(multiProps)){
+        if(multiProps[k].length>1) log('  code '+k+' has '+multiProps[k].length+' values: '+JSON.stringify(multiProps[k]));
+      }
+      const gf=(code,def=0)=>parseFloat(props[code])||def;
+      const gfa=(code)=>(multiProps[code]||[]).map(v=>parseFloat(v)||0);
+      const color=dxfColor(props[62]);
+
+      if(et==='LINE'){
+        const x1=gf(10),y1=-gf(20),x2=gf(11),y2=-gf(21);
+        log('LINE: ('+x1+','+y1+') -> ('+x2+','+y2+')');
+        shapes.push({points:[{cmd:'M',x:x1,y:y1},{cmd:'L',x:x2,y:y2}],stroke:color,name:'Line'});
+      }
+      else if(et==='CIRCLE'){
+        const cx=gf(10),cy=-gf(20),r=gf(40,10);
+        log('CIRCLE: center=('+cx+','+cy+') r='+r);
+        shapes.push({points:[{cmd:'M',x:cx+r,y:cy},{cmd:'A',rx:r,ry:r,angle:0,largeArc:1,sweep:0,x:cx-r,y:cy},{cmd:'A',rx:r,ry:r,angle:0,largeArc:1,sweep:0,x:cx+r,y:cy}],stroke:color,name:'Circle'});
+      }
+      else if(et==='LWPOLYLINE'){
+        const xs=gfa(10),ys=gfa(20);
+        log('LWPOLYLINE: xs='+JSON.stringify(xs)+' ys='+JSON.stringify(ys)+' flags='+props[70]);
+        const pts=[];
+        for(let j=0;j<xs.length;j++) pts.push({cmd:j===0?'M':'L',x:xs[j],y:-ys[j]});
+        const flags=parseInt(props[70])||0;
+        if((flags&1)&&pts.length>1)pts.push({cmd:'Z',x:pts[0].x,y:pts[0].y});
+        shapes.push({points:pts,stroke:color,name:'Polyline'});
+      }
+      else{
+        log('(skipped entity type: '+et+')');
+      }
+    }else{idx++}
+  }
+  log('\n=== TOTAL SHAPES: '+shapes.length+' ===');
+  for(let k=0;k<shapes.length;k++){
+    const s=shapes[k];
+    log('Shape['+k+']: '+s.name+' with '+s.points.length+' points');
+    for(const p of s.points) log('  '+p.cmd+' x='+p.x+' y='+p.y+(p.rx?' rx='+p.rx:''));
+  }
+  return shapes;
+}
+
+// Fetch and test
+fetch('test.dxf').then(r=>r.text()).then(text=>{
+  log('=== Loading test.dxf ('+text.length+' chars) ===\n');
+  parseDXF(text);
+}).catch(err=>log('Fetch error: '+err));
+</script>
+</body>
+</html>

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>DXF Debug</title></head>
+<body style="font-family:monospace;padding:20px;background:#111;color:#0f0">
+<h2>DXF Parser Debug</h2>
+<input type="file" id="f" accept=".dxf">
+<pre id="out" style="white-space:pre-wrap;max-height:80vh;overflow:auto"></pre>
+<script>
+function log(msg){ document.getElementById('out').textContent += msg + '\n'; }
+
+document.getElementById('f').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const text = ev.target.result;
+    log('=== FILE INFO ===');
+    log('Name: ' + file.name);
+    log('Size: ' + text.length + ' chars');
+    log('Lines: ' + text.split(/\r?\n/).length);
+    log('');
+
+    // Step 1: Parse pairs
+    const lines = text.split(/\r?\n/);
+    const pairs = [];
+    for (let i = 0; i < lines.length - 1; i += 2) {
+      pairs.push({ code: parseInt(lines[i].trim()), value: lines[i+1].trim() });
+    }
+    log('=== PAIRS ===');
+    log('Total pairs: ' + pairs.length);
+    log('First 10 pairs:');
+    for (let i = 0; i < Math.min(10, pairs.length); i++) {
+      log(`  [${i}] code=${pairs[i].code} value="${pairs[i].value}"`);
+    }
+    log('');
+
+    // Step 2: Find ENTITIES section
+    let idx = 0;
+    let foundEntities = false;
+    while (idx < pairs.length) {
+      if (pairs[idx].code === 2 && pairs[idx].value === 'ENTITIES') {
+        foundEntities = true;
+        log('=== ENTITIES SECTION FOUND at pair index ' + idx + ' ===');
+        break;
+      }
+      idx++;
+    }
+    if (!foundEntities) {
+      log('!!! ENTITIES SECTION NOT FOUND !!!');
+      log('');
+      log('All section markers (code=2):');
+      for (let i = 0; i < pairs.length; i++) {
+        if (pairs[i].code === 2) log(`  [${i}] code=2 value="${pairs[i].value}"`);
+      }
+      log('');
+      log('All code=0 values:');
+      for (let i = 0; i < pairs.length; i++) {
+        if (pairs[i].code === 0) log(`  [${i}] code=0 value="${pairs[i].value}"`);
+      }
+
+      // Check for BOM or encoding issues
+      log('');
+      log('=== ENCODING CHECK ===');
+      log('First 3 char codes: ' + text.charCodeAt(0) + ', ' + text.charCodeAt(1) + ', ' + text.charCodeAt(2));
+      log('First line raw: "' + lines[0] + '"');
+      log('First line charCodes: ' + [...lines[0]].map(c => c.charCodeAt(0)).join(','));
+      if (lines[0].trim() !== lines[0]) {
+        log('WARNING: First line has leading/trailing whitespace');
+      }
+
+      // Try alternative parsing - some DXF files have varying whitespace
+      log('');
+      log('=== RAW LINE DUMP (first 40 lines) ===');
+      for (let i = 0; i < Math.min(40, lines.length); i++) {
+        log(`  line[${i}]: "${lines[i]}" (len=${lines[i].length}, codes=[${[...lines[i]].map(c=>c.charCodeAt(0)).join(',')}])`);
+      }
+      return;
+    }
+    idx++;
+
+    // Step 3: Parse entities
+    log('');
+    log('=== PARSING ENTITIES ===');
+    let entityCount = 0;
+    const entities = [];
+    while (idx < pairs.length) {
+      if (pairs[idx].code === 0 && pairs[idx].value === 'ENDSEC') {
+        log('ENDSEC found at pair index ' + idx);
+        break;
+      }
+      if (pairs[idx].code === 0) {
+        const et = pairs[idx].value;
+        entityCount++;
+        log(`Entity #${entityCount}: type="${et}" at pair index ${idx}`);
+        idx++;
+        const ent = { type: et, props: {} };
+        while (idx < pairs.length && pairs[idx].code !== 0) {
+          const c = pairs[idx].code, v = pairs[idx].value;
+          if (!ent.props[c]) ent.props[c] = v;
+          else {
+            if (!Array.isArray(ent.props[c])) ent.props[c] = [ent.props[c]];
+            ent.props[c].push(v);
+          }
+          idx++;
+        }
+        log('  Properties: ' + JSON.stringify(ent.props));
+        entities.push(ent);
+
+        // Simulate shape creation
+        if (et === 'LINE') {
+          const x1 = parseFloat(ent.props[10]) || 0;
+          const y1 = -(parseFloat(ent.props[20]) || 0);
+          const x2 = parseFloat(ent.props[11]) || 0;
+          const y2 = -(parseFloat(ent.props[21]) || 0);
+          log(`  -> LINE: (${x1},${y1}) to (${x2},${y2})`);
+        } else if (et === 'CIRCLE') {
+          const cx = parseFloat(ent.props[10]) || 0;
+          const cy = -(parseFloat(ent.props[20]) || 0);
+          const r = parseFloat(ent.props[40]) || 10;
+          log(`  -> CIRCLE: center=(${cx},${cy}) r=${r}`);
+        } else if (et === 'LWPOLYLINE') {
+          let xs = ent.props[10], ys = ent.props[20];
+          log(`  -> LWPOLYLINE: xs=${JSON.stringify(xs)}, ys=${JSON.stringify(ys)}, code70=${ent.props[70]}`);
+          if (!Array.isArray(xs)) xs = [xs];
+          if (!Array.isArray(ys)) ys = [ys];
+          log(`  -> Points: ${xs.map((x,i) => `(${x},${ys[i]})`).join(', ')}`);
+        }
+        log('');
+      } else {
+        log(`WARNING: unexpected pair at ${idx}: code=${pairs[idx].code} value="${pairs[idx].value}"`);
+        idx++;
+      }
+    }
+    log('=== TOTAL ENTITIES: ' + entityCount + ' ===');
+  };
+  reader.readAsText(file);
+});
+</script>
+</body>
+</html>
